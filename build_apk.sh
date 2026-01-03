@@ -4,24 +4,61 @@ set -e
 # Define the container image
 IMAGE="kivy/buildozer"
 
-# Run the build inside the container
-# Added :Z to volume mounts for SELinux relabeling
-podman run --rm --entrypoint /bin/bash -v "$(pwd):/home/user/hostcwd:Z" $IMAGE -c '
+# Ensure the bin directory exists locally
+mkdir -p bin
+
+echo "Starting Buildozer Container..."
+# Use :Z for shared volume mount on Fedora
+podman run --rm --userns=keep-id --entrypoint /bin/bash -v "$(pwd):/home/user/hostcwd:Z" $IMAGE -c '
     set -e
     
-    # 3. Install missing SDK components manually
-    # Note: Buildozer will install SDK in the project directory now (.buildozer)
-    # We need to locate it correctly if we want to patch it, but usually buildozer handles it.
-    # For now, let's trust buildozer to init it in ./.buildozer
-    
-    echo "Starting Buildozer..."
+    # Create a fresh virtual environment
+    echo "Creating local build environment..."
+    python3 -m venv ~/build_venv
+    source ~/build_venv/bin/activate
+
+    echo "Installing buildozer..."
+    pip install --upgrade pip
+    # Pin Cython to 0.29.x because pyjnius is not yet fully compatible with Cython 3.x
+    pip install buildozer "cython<3.0" sh setuptools
+
+    # Pre-setup SDK
+    export ANDROID_HOME="/home/ubuntu/.buildozer/android/platform/android-sdk"
+    mkdir -p $ANDROID_HOME/cmdline-tools
+
+    if [ ! -d "$ANDROID_HOME/cmdline-tools/latest" ]; then
+        echo "Downloading Android Command Line Tools..."
+        cd $ANDROID_HOME/cmdline-tools
+        python3 -c "import urllib.request; urllib.request.urlretrieve(\"https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip\", \"tools.zip\")"
+        unzip -q tools.zip
+        mv cmdline-tools latest
+        rm tools.zip
+    fi
+
+    export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+
+    echo "Pre-installing Android API 33..."
+    yes | sdkmanager --sdk_root=$ANDROID_HOME "platforms;android-33" "build-tools;33.0.0" "platform-tools"
+
+    # Go to work dir
     cd /home/user/hostcwd
+    
+    # Ensure buildozer uses the right SDK path
+    sed -i "s|^#android.sdk_path =.*|android.sdk_path = /home/ubuntu/.buildozer/android/platform/android-sdk|" buildozer.spec
+
+    echo "Starting Buildozer build..."
     yes | buildozer android debug
     
-    # Rename the output to the desired friendly name
-    # Buildozer puts it in bin/
-    # We anticipate the file pattern: serpilas_transfer-1.0-arm64-v8a-debug.apk
-    
-    cp bin/*-debug.apk bin/SerPilasViritualMoneyTrasferv1.2.apk
-    echo "Build Complete. APK available at bin/SerPilasViritualMoneyTrasferv1.2.apk"
+    # Find and rename artifact
+    LATEST_APK=$(ls -t bin/*.apk | grep -v "SerPilasViritualMoneyTrasferv1.2.apk" | head -n1)
+    if [ -n "$LATEST_APK" ]; then
+        TARGET="bin/SerPilasViritualMoneyTrasferv1.2.apk"
+        cp "$LATEST_APK" "$TARGET"
+        echo "--------------------------------------------------------"
+        echo "SUCCESS! APK is ready at: $TARGET"
+        echo "--------------------------------------------------------"
+    else
+        echo "ERROR: Build finished but no APK found."
+        exit 1
+    fi
 '
