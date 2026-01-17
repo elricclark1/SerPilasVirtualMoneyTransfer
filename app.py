@@ -5,7 +5,7 @@ import datetime
 import json
 from flask import Flask, render_template_string, request, session, redirect, url_for, jsonify, flash
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import func
+from sqlalchemy import text
 
 # Configuration
 app = Flask(__name__)
@@ -69,25 +69,102 @@ def init_bank_user():
         print("Bank user initialized.")
     return bank
 
-def get_local_ip():
-    # Primary: Linux 'hostname -I' (works offline/LAN-only)
-    try:
-        import subprocess
-        output = subprocess.check_output("hostname -I", shell=True).decode('utf-8').strip()
-        if output:
-            return output.split()[0] # Take the first IP
-    except Exception:
-        pass
-
-    # Fallback: Socket connection (requires gateway/internet routing)
+def _socket_fallback_ip():
+    """Socket-based IP discovery (works when routing to internet exists)."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(('8.8.8.8', 80))
-        IP = s.getsockname()[0]
+        ip = s.getsockname()[0]
         s.close()
+        return ip
     except Exception:
-        IP = '127.0.0.1'
-    return IP
+        return '127.0.0.1'
+
+
+def get_local_ip():
+    """
+    Return the Wi‑Fi LAN IP for URLs and QR codes (never 127.0.0.1 or cellular when
+    avoidable). On Android: no hostname -I; WifiManager, then NetworkInterface
+    (site‑local), then socket. On desktop: hostname -I then socket.
+    """
+    print("DEBUG: Starting IP detection...")
+    
+    # --- Android Logic ---
+    if 'ANDROID_PRIVATE' in os.environ:
+        print("DEBUG: Android environment detected.")
+        try:
+            from jnius import autoclass
+            
+            # 1. Try WifiManager (Good for Client Mode)
+            try:
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                Context = autoclass('android.content.Context')
+                activity = PythonActivity.mActivity
+                wifi = activity.getSystemService(Context.WIFI_SERVICE)
+                info = wifi.getConnectionInfo()
+                if info:
+                    ip_int = info.getIpAddress()
+                    if ip_int:
+                        ip = "%d.%d.%d.%d" % (
+                            ip_int & 0xff, (ip_int >> 8) & 0xff,
+                            (ip_int >> 16) & 0xff, (ip_int >> 24) & 0xff
+                        )
+                        # Filter out 0.0.0.0 and localhost
+                        if ip != "0.0.0.0" and not ip.startswith("127."):
+                            print(f"DEBUG: WifiManager returned {ip}")
+                            return ip
+            except Exception as e:
+                print(f"DEBUG: WifiManager error: {e}")
+
+            # 2. NetworkInterface Scan (Good for Hotspot or Fallback)
+            # Prioritize wlan/ap interfaces and 192.168.x.x
+            print("DEBUG: Scanning NetworkInterfaces...")
+            NetworkInterface = autoclass('java.net.NetworkInterface')
+            Collections = autoclass('java.util.Collections')
+            interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+            
+            candidates = []
+            for ni in interfaces:
+                name = ni.getName()
+                display = ni.getDisplayName()
+                # print(f"DEBUG: Interface {name}") # Too noisy?
+                
+                try:
+                    addrs = Collections.list(ni.getInetAddresses())
+                    for addr in addrs:
+                        if addr.isLoopbackAddress(): continue
+                        host = addr.getHostAddress()
+                        # IPv4 check
+                        if '.' in host and ':' not in host:
+                            print(f"DEBUG: Found {host} on {name}")
+                            score = 0
+                            # Preference logic
+                            if 'wlan' in name or 'ap0' in name or 'tether' in name:
+                                score += 20
+                            if host.startswith('192.168.'):
+                                score += 10
+                            if host.startswith('172.'):
+                                score += 5
+                            if host.startswith('10.'):
+                                score += 1
+                                
+                            candidates.append((score, host))
+                except Exception:
+                    continue
+            
+            if candidates:
+                # Sort by score desc
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                best = candidates[0][1]
+                print(f"DEBUG: Selected best candidate: {best}")
+                return best
+                
+        except Exception as e:
+            print(f"DEBUG: Android IP detection failed: {e}")
+
+    # --- Socket Fallback (Universal) ---
+    print("DEBUG: Using socket fallback.")
+    return _socket_fallback_ip()
 
 def format_currency(value):
     if value is None:
@@ -97,6 +174,8 @@ def format_currency(value):
 app.jinja_env.filters['currency'] = format_currency
 
 # --- Routes ---
+# All routes and url_for() use relative paths; JS fetch/forms/links use them.
+# Served at http://<LAN_IP>:8080, so clients on the same Wi‑Fi work without CORS or absolute URLs.
 
 @app.route('/host_login')
 def host_login():
@@ -170,7 +249,7 @@ def index():
     # Generate My Request QR Code
     # The URL that others scan to pay me
     my_ip = get_local_ip()
-    request_url = f"http://{my_ip}:5000/?send_to={current_user.username}"
+    request_url = f"http://{my_ip}:8080/?send_to={current_user.username}"
     
     # Check Monopoly Mode
     monopoly_mode = get_setting('monopoly_mode') == '1'
@@ -312,7 +391,7 @@ def qr_image():
     
     user = session['user']
     ip = get_local_ip()
-    data = f"http://{ip}:5000/?send_to={user}"
+    data = f"http://{ip}:8080/?send_to={user}"
     
     import io
     from flask import send_file
@@ -586,7 +665,7 @@ HTML_BASE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>WireMoney</title>
+    <title>SerPilasVirtualMoney</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { background-color: #1a202c; color: #e2e8f0; font-family: sans-serif; }
@@ -622,7 +701,7 @@ HTML_BASE = """
 
 LOGIN_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
 <div class="card text-center mt-10 max-w-md mx-auto">
-    <h1 class="text-4xl font-bold mb-8 text-blue-400 tracking-tight">WireMoney</h1>
+    <h1 class="text-4xl font-bold mb-8 text-blue-400 tracking-tight">SerPilasVirtualMoney</h1>
     <p class="mb-6 text-lg text-gray-300">Enter a username to join the economy.</p>
     <form action="{{ url_for('login', **request_args) }}" method="POST">
         <input type="text" name="username" id="usernameInput" placeholder="Username" required autocomplete="off" class="text-center text-2xl h-16 rounded-xl">
@@ -1198,7 +1277,7 @@ ADMIN_DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}'
 
 def print_startup_qr():
     ip = get_local_ip()
-    url = f"http://{ip}:5000"
+    url = f"http://{ip}:8080"
     print("\n" + "="*40)
     print(f"Server running at: {url}")
     print("Scan this QR code to connect:")
@@ -1218,14 +1297,14 @@ def init_db():
         with db.engine.connect() as conn:
             # Check for is_banker
             try:
-                conn.execute(db.text("ALTER TABLE user ADD COLUMN is_banker BOOLEAN DEFAULT 0"))
+                conn.execute(text("ALTER TABLE user ADD COLUMN is_banker BOOLEAN DEFAULT 0"))
                 print("Added is_banker column")
             except Exception:
                 pass # Column likely exists
             
             # Check for color
             try:
-                conn.execute(db.text("ALTER TABLE user ADD COLUMN color VARCHAR(20) DEFAULT '#3b82f6'"))
+                conn.execute(text("ALTER TABLE user ADD COLUMN color VARCHAR(20) DEFAULT '#3b82f6'"))
                 print("Added color column")
             except Exception:
                 pass # Column likely exists
@@ -1241,4 +1320,7 @@ if __name__ == '__main__':
     init_db()
     
     print_startup_qr()
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Run the Flask app
+    # On Android, we don't need debug mode.
+    # We bind to 0.0.0.0 to be accessible from other devices.
+    app.run(host='0.0.0.0', port=8080, debug=False)

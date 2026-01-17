@@ -1,4 +1,10 @@
+# Desktop deps for: python main.py
+# APK build: buildozer android debug (buildozer.spec has android, pyjnius, etc.)
 Flask
 Flask-SQLAlchemy
+sqlalchemy
 qrcode
 pillow
+greenlet>=2.0.0
+typing_extensions
+kivy
