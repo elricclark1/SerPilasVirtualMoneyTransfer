@@ -1,29 +1,71 @@
-name: Build
+name: Build APK
 
 on:
   push:
     branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
 
-      # Build with Buildozer
-      - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          command: buildozer android debug
-          buildozer_version: master
+      - name: Get Date
+        id: get-date
+        run: |
+          echo "date=$(date -u +'%Y%m%d')" >> $GITHUB_OUTPUT
+        shell: bash
 
-      # Upload artifacts
-      - name: Upload artifacts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            python3-dev \
+            ffmpeg \
+            libsdl2-dev \
+            libsdl2-image-dev \
+            libsdl2-mixer-dev \
+            libsdl2-ttf-dev \
+            libportmidi-dev \
+            libswscale-dev \
+            libavformat-dev \
+            libavcodec-dev \
+            zlib1g-dev \
+            libgstreamer1.0-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            libffi-dev \
+            libssl-dev \
+            libsqlite3-dev \
+            libunwind-dev \
+            openjdk-17-jdk
+
+      - name: Install Buildozer
+        run: |
+          pip install --upgrade pip
+          pip install buildozer cython==0.29.33 sh toml pep517 build jinja2 colorama appdirs
+
+      - name: Build with Buildozer
+        run: |
+          # Patch p4a to remove the problematic flag
+          # This is a robust way to fix the linker error on modern NDKs
+          export LDFLAGS=" "
+          yes | buildozer android debug
+        env:
+          BUILDOZER_ALLOW_ORG_DOCS: 1
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: package
-          path: ${{ steps.buildozer.outputs.filename }}
+          path: bin/*.apk
