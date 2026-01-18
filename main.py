@@ -1,240 +1,320 @@
-import sys
-import traceback
 import threading
-import socket
-import io
 import time
+import os
+import sys
+import webbrowser
 
-# Kivy Imports
+# Ensure the current directory is in python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from kivy.app import App
-from kivy.clock import Clock, mainthread
-from kivy.uix.label import Label
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.label import Label
 from kivy.uix.image import Image
 from kivy.uix.button import Button
-from kivy.uix.screenmanager import ScreenManager, Screen, SlideTransition
-from kivy.core.image import Image as CoreImage
+from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.clock import Clock
+from kivy.graphics.texture import Texture
+from kivy.core.window import Window
+from kivy.utils import platform
+from kivy.graphics import Color, Rectangle, RoundedRectangle
+from kivy.uix.textinput import TextInput
+from kivy.uix.spinner import Spinner
 
-# Flask Imports
-# We assume app.py exists in the same directory and contains the Flask 'app' object
-try:
-    from app import app as flask_app, init_db, get_local_ip
-except ImportError as e:
-    flask_app = None
-    init_error = traceback.format_exc()
+# Import the Flask app
+from app import app, get_local_ip, init_db
 
-# QR Code Imports
-try:
-    import qrcode
-except ImportError:
-    qrcode = None
+# --- Custom UI Elements ---
 
-class ErrorLabel(Label):
+class RoundedButton(Button):
+    def __init__(self, **kwargs):
+        self.btn_color = kwargs.pop('color_rgb', (0.2, 0.6, 1, 1))
+        super().__init__(**kwargs)
+        self.background_color = (0, 0, 0, 0) # Invisible standard background
+        self.background_normal = ''
+        with self.canvas.before:
+            Color(*self.btn_color)
+            self.rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[15])
+        self.bind(pos=self.update_rect, size=self.update_rect)
+
+    def update_rect(self, *args):
+        self.rect.pos = self.pos
+        self.rect.size = self.size
+
+class StyledInput(TextInput):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.text_size = (self.width, None)
-        self.size_hint_y = None
-        self.height = self.texture_size[1]
-        self.halign = 'left'
-        self.valign = 'top'
-        self.bind(width=lambda *x: self.setter('text_size')(self, (self.width, None)))
-        self.bind(texture_size=lambda *x: self.setter('height')(self, self.texture_size[1]))
+        self.background_color = (0.2, 0.2, 0.25, 1)
+        self.foreground_color = (1, 1, 1, 1)
+        self.cursor_color = (0.2, 0.6, 1, 1)
+        self.padding = [15, 15]
+        self.font_size = '20sp'
+        self.multiline = False
+        self.halign = 'center'
+
+# --- Screens ---
 
 class MenuScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        layout = BoxLayout(orientation='vertical', padding=50, spacing=30)
+        layout = BoxLayout(orientation='vertical', padding=40, spacing=30)
         
-        # Title
         title = Label(
-            text="SerPilasVirtualMoney", 
-            font_size='40sp', 
-            color=(0.2, 0.8, 1, 1),
-            bold=True,
+            text="[b]SerPilas[/b]\nVirtual Money", 
+            font_size='48sp', 
+            halign='center', 
+            markup=True,
+            color=(1, 1, 1, 1),
             size_hint_y=0.4
         )
-        layout.add_widget(title)
         
-        # Start Button
-        btn = Button(
-            text="START NEW GAME",
-            font_size='20sp',
+        btn_layout = BoxLayout(orientation='vertical', spacing=20, size_hint_y=0.6)
+        
+        btn_continue = RoundedButton(
+            text="CONTINUE / IMPORT", 
+            font_size='24sp', 
             bold=True,
-            size_hint_y=0.15,
-            background_normal='',
-            background_color=(0.2, 0.6, 0.2, 1), # Green
-            color=(1, 1, 1, 1)
+            color_rgb=(0.1, 0.7, 0.3, 1), # Greenish
+            size_hint_y=None, 
+            height=80
         )
-        btn.bind(on_release=self.start_game)
-        layout.add_widget(btn)
+        btn_continue.bind(on_release=self.go_continue)
         
-        # Spacer
-        layout.add_widget(Label(size_hint_y=0.45))
+        btn_new = RoundedButton(
+            text="NEW GAME", 
+            font_size='24sp', 
+            bold=True,
+            color_rgb=(0.8, 0.2, 0.2, 1), # Reddish
+            size_hint_y=None, 
+            height=80
+        )
+        btn_new.bind(on_release=self.go_new)
+        
+        btn_layout.add_widget(btn_continue)
+        btn_layout.add_widget(btn_new)
+        
+        layout.add_widget(title)
+        layout.add_widget(btn_layout)
+        self.add_widget(layout)
+
+    def go_continue(self, instance):
+        # Starts server and goes to admin dashboard for continue/import
+        self.manager.current = 'server'
+        self.manager.get_screen('server').start_server(reset_db=False, host_username='Host')
+
+    def go_new(self, instance):
+        self.manager.current = 'setup' # Go to setup first
+
+class SetupScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        layout = BoxLayout(orientation='vertical', padding=40, spacing=20)
+        
+        layout.add_widget(Label(text="Game Setup", font_size='32sp', bold=True, size_hint_y=0.2))
+        
+        # Host Name
+        layout.add_widget(Label(text="Host Username", color=(0.7, 0.7, 0.7, 1), size_hint_y=None, height=30))
+        self.username_input = StyledInput(hint_text="Enter your name", size_hint_y=None, height=60)
+        layout.add_widget(self.username_input)
+        
+        # Game Mode
+        layout.add_widget(Label(text="Game Mode", color=(0.7, 0.7, 0.7, 1), size_hint_y=None, height=30))
+        self.mode_spinner = Spinner(
+            text='Monopoly Mode',
+            values=('Monopoly Mode', 'Custom Mode'),
+            size_hint_y=None,
+            height=60,
+            background_normal='',
+            background_color=(0.2, 0.4, 0.6, 1),
+            font_size='18sp',
+            bold=True
+        )
+        layout.add_widget(self.mode_spinner)
+        
+        layout.add_widget(Label(size_hint_y=0.1)) # Spacer
+        
+        btn_start = RoundedButton(
+            text="START SERVER",
+            font_size='22sp',
+            bold=True,
+            color_rgb=(0.2, 0.8, 0.4, 1),
+            size_hint_y=None, height=80
+        )
+        btn_start.bind(on_release=self.start_game)
+        layout.add_widget(btn_start)
         
         self.add_widget(layout)
-    
+
     def start_game(self, instance):
-        self.manager.transition = SlideTransition(direction='left')
+        username = self.username_input.text.strip()
+        if not username:
+            self.username_input.hint_text = "Name required!"
+            self.username_input.hint_text_color = (1, 0, 0, 1)
+            return
+            
+        mode = 'monopoly' if self.mode_spinner.text == 'Monopoly Mode' else 'custom'
+        
         self.manager.current = 'server'
+        self.manager.get_screen('server').start_server(
+            reset_db=True, 
+            host_username=username, 
+            game_mode=mode
+        )
 
 class ServerScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.server_started = False
+        self.server_thread = None
+        self.flask_app = app
+        self.ip_address = "Detecting..."
+        self.host_username = None
         
-        self.layout = BoxLayout(orientation='vertical', padding=50, spacing=20)
+        layout = BoxLayout(orientation='vertical', padding=20, spacing=20)
         
-        # 1. URL Label
-        self.url_label = Label(
-            text="Initializing...", 
+        self.status_label = Label(
+            text="Initializing Server...", 
             font_size='24sp', 
-            size_hint_y=0.1,
-            color=(0.4, 1, 0.4, 1) # Green
+            bold=True, 
+            color=(0.2, 0.8, 1, 1),
+            size_hint_y=0.15
         )
-        self.layout.add_widget(self.url_label)
+        
+        self.qr_image = Image(size_hint_y=0.5, allow_stretch=True)
+        
+        self.ip_label = Label(
+            text="", 
+            font_size='32sp', 
+            halign='center', 
+            bold=True,
+            size_hint_y=0.2
+        )
+        
+        instr = Label(
+            text="Scan QR code with other phones\nto join the game", 
+            font_size='16sp', 
+            color=(0.7, 0.7, 0.7, 1),
+            size_hint_y=0.15
+        )
 
-        # 2. QR Code Image
-        self.qr_image = Image(size_hint_y=0.6, allow_stretch=True)
-        self.layout.add_widget(self.qr_image)
-
-        # 3. Status/Log Label
-        self.log_label = Label(
-            text="Ready to start...",
-            size_hint_y=0.3,
+        btn_relaunch = RoundedButton(
+            text="RE-OPEN GAME",
+            size_hint_y=None, height=50,
             font_size='14sp',
-            color=(0.8, 0.8, 0.8, 1)
+            color_rgb=(0.2, 0.3, 0.5, 1)
         )
-        self.layout.add_widget(self.log_label)
+        btn_relaunch.bind(on_release=self.open_browser)
         
-        self.add_widget(self.layout)
+        layout.add_widget(self.status_label)
+        layout.add_widget(self.qr_image)
+        layout.add_widget(self.ip_label)
+        layout.add_widget(instr)
+        layout.add_widget(btn_relaunch)
+        
+        self.add_widget(layout)
 
-    def on_enter(self):
-        """Called when the screen is displayed."""
-        if not self.server_started:
-            self.server_started = True
-            self.log("Starting services...")
-            Clock.schedule_once(self.start_server, 0.5)
-
-    def get_ip(self):
-        """Wi‑Fi LAN IP for URL/QR; on Android uses get_local_ip (WifiManager/NetworkInterface, no hostname -I)."""
-        try:
-            return get_local_ip()
-        except NameError:
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(("8.8.8.8", 80))
-                ip = s.getsockname()[0]
-                s.close()
-                return ip or "127.0.0.1"
-            except Exception:
-                return "127.0.0.1"
-
-    def generate_qr(self, data):
-        if not qrcode:
-            self.log("Error: qrcode library not found")
+    def start_server(self, reset_db=False, host_username=None, game_mode='monopoly'):
+        if self.server_started:
+            if host_username:
+                 self.host_username = host_username
+                 self.open_browser(None)
             return
-            
+
+        self.status_label.text = "Configuring World..."
+        self.host_username = host_username
+        
+        # Database Setup Logic
+        from app import User, SystemSetting, db
+        
+        if reset_db:
+            try:
+                db_path = os.path.join(os.path.dirname(__file__), 'currency.db')
+                if os.path.exists(db_path):
+                    os.remove(db_path)
+                print("Database reset.")
+            except Exception as e:
+                print(f"Error resetting DB: {e}")
+
+        # Initialize Database Structure
+        init_db()
+        
+        # Apply Game Mode Settings immediately
+        if reset_db:
+            with self.flask_app.app_context():
+                is_monopoly = '1' if game_mode == 'monopoly' else '0'
+                setting = SystemSetting.query.get('monopoly_mode')
+                if not setting:
+                    setting = SystemSetting(key='monopoly_mode', value=is_monopoly)
+                    db.session.add(setting)
+                else:
+                    setting.value = is_monopoly
+                
+                if is_monopoly == '1':
+                    if not User.query.filter_by(username='Free Parking').first():
+                        fp = User(username='Free Parking', balance=0)
+                        db.session.add(fp)
+                
+                db.session.commit()
+
+        # Start Flask in a separate thread
+        self.server_thread = threading.Thread(target=self.run_flask)
+        self.server_thread.daemon = True
+        self.server_thread.start()
+        
+        self.server_started = True
+        
+        Clock.schedule_interval(self.update_ui_info, 2)
+        Clock.schedule_once(self.update_ui_info, 0.5)
+        
+        if host_username:
+             Clock.schedule_once(lambda dt: self.open_browser(None), 2)
+
+    def run_flask(self):
         try:
-            qr = qrcode.QRCode(version=1, box_size=10, border=4)
-            qr.add_data(data)
-            qr.make(fit=True)
-            img = qr.make_image(fill_color="black", back_color="white")
-            
-            # Convert PIL image to Kivy Texture
-            img_byte_arr = io.BytesIO()
-            img.save(img_byte_arr, format='PNG')
-            img_byte_arr.seek(0)
-            
-            im = CoreImage(img_byte_arr, ext='png')
-            self.qr_image.texture = im.texture
+            self.flask_app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
         except Exception as e:
-            self.log(f"QR Error: {e}")
+            print(f"Flask Server Error: {e}")
 
-    def log(self, msg):
-        @mainthread
-        def _update(text):
-            self.log_label.text += f"\n{text}"
-        _update(msg)
+    def update_ui_info(self, dt):
+        ip = get_local_ip()
+        if ip != self.ip_address:
+            self.ip_address = ip
+            self.status_label.text = "SERVER ONLINE"
+            self.status_label.color = (0, 1, 0, 1)
+            self.ip_label.text = f"http://{ip}:8080"
+            self.generate_qr_texture(f"http://{ip}:8080")
 
-    def start_server(self, dt):
-        try:
-            # 1. Get IP
-            ip = self.get_ip()
-            self.log(f"DEBUG: main.py got IP: {ip}")
-            port = 8080
-            url = f"http://{ip}:{port}"
-            
-            # 2. Update UI
-            self.url_label.text = url
-            self.generate_qr(url)
-            
-            # 3. Start Flask Thread
-            if flask_app:
-                # Initialize DB if needed
-                try:
-                    init_db()
-                    self.log("Database initialized.")
-                except Exception as e:
-                    self.log(f"DB Init Error: {e}")
+    def generate_qr_texture(self, data):
+        import qrcode
+        from io import BytesIO
+        from kivy.core.image import Image as CoreImage
+        
+        qr = qrcode.QRCode(box_size=10, border=2)
+        qr.add_data(data)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="white", back_color="transparent")
+        
+        buffer = BytesIO()
+        img.save(buffer, format='png')
+        buffer.seek(0)
+        
+        im = CoreImage(buffer, ext='png')
+        self.qr_image.texture = im.texture
+        
+    def open_browser(self, instance):
+        if self.host_username:
+             webbrowser.open(f"http://127.0.0.1:8080/auto_login/{self.host_username}")
+        else:
+             webbrowser.open("http://127.0.0.1:8080/")
 
-                t = threading.Thread(target=self.run_flask, args=(ip, port))
-                t.daemon = True
-                t.start()
-                self.log(f"Server running on {url}")
-            else:
-                self.log("CRITICAL: Flask app not found!")
-                if 'init_error' in globals():
-                    self.log(init_error)
-
-        except Exception as e:
-            self.log(f"Startup Error: {traceback.format_exc()}")
-
-    def run_flask(self, ip, port):
-        try:
-            # Disable reloader to prevent main thread issues
-            flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-        except Exception as e:
-            self.log(f"Flask Crashed: {e}")
-
-class MainApp(App):
+class ServerApp(App):
     def build(self):
-        # Global Exception Catcher for the Kivy Loop
-        sys.excepthook = self.handle_exception
-        
-        try:
-            sm = ScreenManager()
-            sm.add_widget(MenuScreen(name='menu'))
-            sm.add_widget(ServerScreen(name='server'))
-            return sm
-        except Exception:
-            return Label(text=traceback.format_exc(), color=(1, 0, 0, 1))
-
-    def handle_exception(self, exc_type, exc_value, exc_traceback):
-        """
-        Catches crashes that happen AFTER build() returns (runtime crashes).
-        Updates the root widget to show the error.
-        """
-        error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
-        
-        # Safely update UI from whatever thread crashed
-        @mainthread
-        def show_error():
-            # Replace current root with error label
-            if self.root:
-                self.root.clear_widgets()
-                self.root.add_widget(Label(
-                    text=f"CRASH DETECTED:\n\n{error_msg}", 
-                    color=(1, 0, 0, 1),
-                    font_size='16sp',
-                    halign='left',
-                    text_size=(self.root.width - 20, None)
-                ))
-        
-        show_error()
+        Window.clearcolor = (0.05, 0.05, 0.1, 1)
+        sm = ScreenManager()
+        sm.add_widget(MenuScreen(name='menu'))
+        sm.add_widget(SetupScreen(name='setup'))
+        sm.add_widget(ServerScreen(name='server'))
+        return sm
 
 if __name__ == '__main__':
-    try:
-        MainApp().run()
-    except Exception:
-        # Fallback for crashes before Kivy even starts
-        print(traceback.format_exc())
+    ServerApp().run()

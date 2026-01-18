@@ -1,48 +1,50 @@
 #!/bin/bash
 set -e
 
-# Define the container image
-IMAGE="docker.io/kivy/buildozer"
+# Use the same image used by the successful GitHub Actions workflows
+IMAGE="ghcr.io/kivy/buildozer:latest"
 
-# Ensure the bin directory exists locally
+# Ensure directories exist locally
 mkdir -p bin
+mkdir -p .buildozer_container
 
-echo "Starting Buildozer Container..."
-# Use :Z for shared volume mount on Fedora
-podman run --rm --userns=keep-id --entrypoint /bin/bash -v "$(pwd):/home/user/hostcwd:Z" $IMAGE -c '
-    set -e
-    
-    # Create a fresh virtual environment
-    echo "Creating local build environment..."
-    python3 -m venv ~/build_venv
-    source ~/build_venv/bin/activate
+echo "Starting Buildozer with GitHub Container..."
+# Mount local .buildozer_container to /root/.buildozer for persistence
+# We use -i to pass the heredoc to the container
+podman run --rm -i \
+    --entrypoint /bin/bash \
+    -v "$(pwd):/home/user/hostcwd:Z" \
+    -v "$(pwd)/.buildozer_container:/root/.buildozer:Z" \
+    -w /home/user/hostcwd \
+    -e BUILDOZER_WARN_ON_ROOT=0 \
+    $IMAGE <<'EOF'
+set -e
+echo 'Preparing Android SDK Tools...'
+mkdir -p /root/.buildozer/android/platform
 
-    echo "Installing buildozer and dependencies..."
-    pip install --upgrade pip
-    # Pin Cython to 0.29.x because pyjnius is not yet fully compatible with Cython 3.x
-    pip install buildozer "cython<3.0" sh setuptools
+# Run prep to get tools
+yes | buildozer android debug --prep || true
 
-    # Go to work dir
-    cd /home/user/hostcwd
-    
-    # Ensure we don't force a specific SDK path so buildozer can manage it
-    sed -i "s|^android.sdk_path =.*|#android.sdk_path =|" buildozer.spec
-    sed -i "s|^android.ndk_path =.*|#android.ndk_path =|" buildozer.spec
+SDK_ROOT='/root/.buildozer/android/platform/android-sdk'
+if [ -f "$SDK_ROOT/tools/bin/sdkmanager" ]; then
+    echo "Installing Android API 33 components..."
+    yes | "$SDK_ROOT/tools/bin/sdkmanager" --sdk_root="$SDK_ROOT" "platforms;android-33" "build-tools;33.0.0" "platform-tools"
+fi
 
-    echo "Starting Buildozer build..."
-    # yes | handles the license prompts
-    yes | buildozer android debug
-    
-    # Find artifact
-    LATEST_APK=$(ls -t bin/*.apk 2>/dev/null | head -n1)
-    if [ -n "$LATEST_APK" ]; then
-        ABS_APK=$(realpath "$LATEST_APK")
-        echo "--------------------------------------------------------"
-        echo "SUCCESS! APK is ready at: $LATEST_APK"
-        echo "FULL PATH (for LocalSend): $ABS_APK"
-        echo "--------------------------------------------------------"
-    else
-        echo "ERROR: Build finished but no APK found."
-        exit 1
-    fi
-'
+echo "Starting Build..."
+export LDFLAGS=' '
+buildozer android debug
+EOF
+
+# Find artifact
+LATEST_APK=$(ls -t bin/*.apk 2>/dev/null | head -n1)
+if [ -n "$LATEST_APK" ]; then
+    ABS_APK=$(realpath "$LATEST_APK")
+    echo "--------------------------------------------------------"
+    echo "SUCCESS! APK is ready at: $LATEST_APK"
+    echo "FULL PATH (for LocalSend): $ABS_APK"
+    echo "--------------------------------------------------------"
+else
+    echo "ERROR: Build finished but no APK found."
+    exit 1
+fi

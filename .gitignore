@@ -152,3 +152,4 @@ cython_debug/
 .vscode/
 *.swp
 *.swo
+*.bak
