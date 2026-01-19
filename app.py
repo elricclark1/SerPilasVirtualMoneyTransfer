@@ -42,6 +42,22 @@ DEFAULT_PERMISSIONS = {
     'can_act_as_banker': False
 }
 
+# --- Constants ---
+AVAILABLE_COLORS = [
+    '#3b82f6', # Blue
+    '#10b981', # Emerald
+    '#f59e0b', # Amber
+    '#8b5cf6', # Violet
+    '#ec4899', # Pink
+    '#6366f1', # Indigo
+    '#14b8a6', # Teal
+    '#f97316', # Orange
+    '#84cc16', # Lime
+    '#06b6d4', # Cyan
+    '#d946ef', # Fuchsia
+    '#e11d48'  # Rose
+]
+
 # --- Models ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -53,7 +69,7 @@ class User(db.Model):
     permissions_json = db.Column(db.Text, default=json.dumps(DEFAULT_PERMISSIONS))
     last_pass_go = db.Column(db.DateTime, default=lambda: datetime.datetime.utcnow() - datetime.timedelta(days=1))
     created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    color = db.Column(db.String(20), default='#3b82f6') # Default blue
+    color_hex = db.Column(db.String(20), default='#3b82f6') # User-customizable color
 
     def get_permissions(self):
         try:
@@ -206,6 +222,37 @@ def requires_permission(perm):
 
 # --- Routes ---
 
+@app.route('/cycle_color', methods=['POST'])
+def cycle_color():
+    if 'user' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    user = User.query.filter_by(username=session['user']).first()
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+
+    # Get currently used colors
+    active_users = User.query.all()
+    used_colors = {u.color_hex for u in active_users if u.username != user.username}
+    # Reserve System Colors
+    used_colors.add('#EF4444') # Free Parking Red
+    used_colors.add('#E2E8F0') # Bank Grey
+
+    # Find next available color
+    current_index = 0
+    if user.color_hex in AVAILABLE_COLORS:
+        current_index = AVAILABLE_COLORS.index(user.color_hex)
+    
+    for i in range(1, len(AVAILABLE_COLORS) + 1):
+        next_index = (current_index + i) % len(AVAILABLE_COLORS)
+        candidate = AVAILABLE_COLORS[next_index]
+        if candidate not in used_colors:
+            user.color_hex = candidate
+            db.session.commit()
+            return jsonify({'success': True, 'new_color': candidate})
+            
+    return jsonify({'success': False, 'error': 'No colors available'})
+
 @app.route('/auto_login/<username>')
 def auto_login(username):
     # Security: Only allow localhost to use this backdoor
@@ -249,12 +296,14 @@ def index():
         active_users = [u for u in users if u.balance > 0]
         chart_labels = [u.username for u in active_users]
         chart_data = [u.balance for u in active_users]
+        chart_colors = [u.color_hex for u in active_users]
         monopoly_mode = get_setting('monopoly_mode') == '1'
         
         return render_template_string(LOGIN_TEMPLATE, 
                                       request_args=request.args,
                                       chart_labels=json.dumps(chart_labels),
                                       chart_data=json.dumps(chart_data),
+                                      chart_colors=json.dumps(chart_colors),
                                       monopoly_mode=monopoly_mode)
     
     current_user = User.query.filter_by(username=session['user']).first()
@@ -328,7 +377,7 @@ def admin_export():
                 "permissions_json": u.permissions_json,
                 "last_pass_go": u.last_pass_go.isoformat() if u.last_pass_go else None,
                 "created_at": u.created_at.isoformat() if u.created_at else None,
-                "color": u.color
+                "color_hex": u.color_hex
             } for u in users
         ],
         "transactions": [
@@ -397,7 +446,7 @@ def admin_import():
                 is_banker=u_data['is_banker'],
                 is_root=u_data['is_root'],
                 permissions_json=u_data['permissions_json'],
-                color=u_data['color']
+                color_hex=u_data['color_hex']
             )
             if u_data['last_pass_go']:
                 user.last_pass_go = datetime.datetime.fromisoformat(u_data['last_pass_go'])
@@ -498,12 +547,14 @@ def leaderboard():
     active_users = [u for u in users if u.balance > 0]
     chart_labels = [u.username for u in active_users]
     chart_data = [u.balance for u in active_users]
+    chart_colors = [u.color_hex for u in active_users]
     
     return render_template_string(LEADERBOARD_TEMPLATE, 
                                   users=users, 
                                   total_circulation=total_circulation,
                                   chart_labels=json.dumps(chart_labels),
-                                  chart_data=json.dumps(chart_data))
+                                  chart_data=json.dumps(chart_data),
+                                  chart_colors=json.dumps(chart_colors))
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -579,7 +630,11 @@ def transfer():
         real_sender = User.query.filter_by(username='Bank').first()
         note = f"Bank Access by {current_user.username}"
     elif source_name == 'parking':
-        # Free Parking is public in Monopoly Mode
+        # Restriction: Free Parking collection requires Bank Access or Banker Role
+        if not current_user.has_permission('can_send_bank') and not current_user.has_permission('can_act_as_banker'):
+             flash("Access Denied: Cannot send from Free Parking")
+             return redirect(url_for('index'))
+        
         real_sender = User.query.filter_by(username='Free Parking').first()
         note = f"Parking collection by {current_user.username}"
     elif source_name == 'me' or source_name == current_user.username or not source_name:
@@ -839,7 +894,7 @@ def admin_action():
              flash("Permission Denied")
              return redirect(url_for('admin_dashboard'))
         if not User.query.filter_by(username='Free Parking').first():
-            fp = User(username='Free Parking', balance=0)
+            fp = User(username='Free Parking', balance=0, color_hex='#EF4444')
             db.session.add(fp)
             db.session.commit()
             flash("Free Parking account created!")
@@ -981,6 +1036,15 @@ HTML_BASE = """
         .toggle-checkbox:checked + .toggle-label {
             background-color: #68D391;
         }
+        /* Remove Spinners */
+        input::-webkit-outer-spin-button,
+        input::-webkit-inner-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
+        input[type=number] {
+          -moz-appearance: textfield;
+        }
     </style>
 </head>
 <body class="p-6 {{ container_class|default('max-w-4xl') }} mx-auto pb-20">
@@ -1025,7 +1089,7 @@ LOGIN_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
             labels: {{ chart_labels | safe }},
             datasets: [{
                 data: {{ chart_data | safe }},
-                backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6', '#f97316', '#84cc16'],
+                backgroundColor: {{ chart_colors | safe }},
                 borderWidth: 2,
                 borderColor: '#2d3748'
             }]
@@ -1057,36 +1121,13 @@ DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
         <a href="{{ url_for('admin') }}" class="px-3 py-2 bg-red-600 rounded-lg text-sm font-black text-white hover:bg-red-500 transition shadow-lg border border-red-400">ADMIN</a>
         {% endif %}
     </div>
-    <div class="text-base font-bold text-gray-400 tracking-wide">{{ user.username }}</div>
+    <div onclick="cycleColor()" class="text-base font-bold text-gray-400 tracking-wide cursor-pointer hover:text-white transition" id="usernameDisplay">{{ user.username }}</div>
 </div>
 
 <div class="text-center mb-12 pt-6">
     <h2 class="text-gray-500 uppercase tracking-widest text-sm font-black mb-3">Your Balance</h2>
-    <div id="balanceDisplay" class="text-8xl font-black text-white tracking-tighter leading-none drop-shadow-2xl">{{ user.balance | currency }}</div>
+    <div id="balanceDisplay" class="text-8xl font-black text-white tracking-tighter leading-none drop-shadow-2xl" style="color: {{ user.color_hex }}">{{ user.balance | currency }}</div>
 </div>
-
-<div class="mb-8">
-    <p class="text-sm text-gray-400 mb-3 font-black uppercase tracking-widest">Quick Transfer</p>
-    <div class="grid grid-cols-3 gap-3 max-h-64 overflow-y-auto pr-1">
-        {% for r in recents if r.username != user.username %}
-        <button onclick="selectUser('{{ r.username }}')" class="bg-gray-700 hover:bg-gray-600 text-white py-5 px-3 rounded-2xl border border-gray-600 transition shadow-md text-lg font-bold truncate w-full transform active:scale-95">
-            {{ r.username }}
-        </button>
-        {% else %}
-        <div class="col-span-3 text-center py-4"><p class="text-gray-600 text-sm italic">No other users yet.</p></div>
-        {% endfor %}
-    </div>
-</div>
-
-{% if monopoly_mode and perms.can_receive_pass_go %}
-<div class="mb-8">
-    <form action="{{ url_for('pass_go') }}" method="POST">
-        <button type="submit" id="passGoBtn" class="w-full bg-yellow-500 hover:bg-yellow-400 text-black font-black py-6 rounded-2xl shadow-2xl transform active:scale-95 transition text-2xl flex justify-center items-center gap-3 border-b-8 border-yellow-700 active:border-b-0 disabled:bg-gray-600 disabled:border-gray-800 disabled:text-gray-400 disabled:transform-none">
-            <span id="passGoIcon">&#127922;</span> <span id="passGoText">PASS GO (+ $200)</span>
-        </button>
-    </form>
-</div>
-{% endif %}
 
 <div class="card relative shadow-2xl border border-gray-700/50">
     <h2 class="text-2xl font-black mb-4 text-gray-200">Transfer Funds</h2>
@@ -1097,7 +1138,7 @@ DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
             <select name="source" id="bankerSourceSelect" onchange="checkSource()" class="h-16 text-xl rounded-xl w-full bg-red-900/20 border border-red-500/50 text-white font-bold p-4">
                 <option value="me">My Account ({{ user.balance | currency }})</option>
                 <option value="bank" class="text-yellow-400">&#127974; THE BANK</option>
-                <option value="parking" class="text-purple-400">&#128663; Free Parking</option>
+                <option value="parking" class="text-red-400">&#128663; Free Parking</option>
                 <optgroup label="Players">
                     {% for r in recents if r.username not in ['Bank', 'Free Parking'] %}
                     <option value="{{ r.username }}">{{ r.username }}</option>
@@ -1105,13 +1146,13 @@ DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
                 </optgroup>
             </select>
         </div>
-        {% elif perms.can_send_bank or monopoly_mode %}
+        {% elif perms.can_send_bank %}
         <div class="mb-4">
             <label class="text-sm font-bold text-gray-500 uppercase tracking-wide ml-1 mb-1 block">From Account</label>
             <select name="source" id="bankerSourceSelect" onchange="checkSource()" class="h-16 text-xl rounded-xl w-full bg-blue-900/30 border border-blue-500/50 text-white font-bold p-4">
                 <option value="me">My Personal Account ({{ user.balance | currency }})</option>
                 {% if perms.can_send_bank %}<option value="bank" class="text-yellow-400">&#127974; THE BANK</option>{% endif %}
-                {% if monopoly_mode %}<option value="parking" class="text-purple-400">&#128663; Free Parking</option>{% endif %}
+                {% if monopoly_mode %}<option value="parking" class="text-red-400">&#128663; Free Parking</option>{% endif %}
             </select>
         </div>
         {% endif %}
@@ -1122,7 +1163,7 @@ DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
                 <select name="recipient" id="recipientSelect" onchange="checkRecipient()" class="h-16 text-xl rounded-xl w-full bg-blue-900/30 border border-blue-500/50 text-white font-bold p-4">
                     <option value="" disabled {{ 'selected' if not send_to else '' }}>Select Recipient</option>
                     <option value="bank" class="text-yellow-400" {{ 'selected' if send_to == 'Bank' else '' }}>&#127974; THE BANK</option>
-                    <option value="parking" class="text-purple-400" {{ 'selected' if send_to == 'Free Parking' else '' }}>&#128663; Free Parking</option>
+                    <option value="parking" class="text-red-400" {{ 'selected' if send_to == 'Free Parking' else '' }}>&#128663; Free Parking</option>
                     <optgroup label="Players">
                         {% for r in recents if r.username not in ['Bank', 'Free Parking'] %}
                         <option value="{{ r.username }}" {{ 'selected' if send_to == r.username else '' }}>{{ r.username }}</option>
@@ -1137,9 +1178,18 @@ DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
                 {% endif %}
             </div>
         </div>
+
+        <div class="flex gap-2 mb-4">
+            <button type="button" onclick="selectUser('bank')" class="flex-1 bg-slate-300 hover:bg-slate-200 text-slate-900 font-bold py-3 rounded-lg shadow-md flex items-center justify-center gap-2 transition active:scale-95">
+                <span class="text-xl">🏛️</span> Bank
+            </button>
+            <button type="button" onclick="selectUser('parking')" class="flex-1 bg-red-500 hover:bg-red-400 text-white font-bold py-3 rounded-lg shadow-md flex items-center justify-center gap-2 transition active:scale-95">
+                <span class="text-xl">🚗</span> Parking
+            </button>
+        </div>
         
         <label class="text-sm font-bold text-gray-500 uppercase tracking-wide ml-1 mb-1 block">Amount</label>
-        <input type="number" name="amount" id="amountInput" step="1" min="1" placeholder="0" required class="h-16 text-2xl rounded-xl font-black">
+        <input type="number" name="amount" id="amountInput" step="1" min="1" placeholder="0" required class="appearance-none h-16 text-2xl rounded-xl font-black">
         
         <button type="submit" class="btn-primary mt-4 py-5 text-xl rounded-xl shadow-lg border-b-4 border-blue-700 active:border-b-0">Send Money</button>
     </form>
@@ -1208,6 +1258,18 @@ DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
         }
     }
 
+    function cycleColor() {
+        fetch('{{ url_for("cycle_color") }}', { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                document.getElementById('balanceDisplay').style.color = data.new_color;
+                // Optionally reload or update other elements
+                location.reload(); 
+            }
+        });
+    }
+
     setInterval(() => {
         if (document.activeElement.tagName === 'INPUT') return;
         fetch('{{ url_for("api_status") }}').then(res => res.json()).then(data => {
@@ -1238,8 +1300,8 @@ DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
 </script>
 
 {% if free_parking_balance is not none %}
-<div class="card text-center shadow-xl border-4 border-purple-500/50 bg-purple-900/20 mb-6 py-6">
-    <h2 class="text-sm font-black text-purple-400 uppercase tracking-widest mb-1">&#128663; Free Parking Pot</h2>
+<div class="card text-center shadow-xl border-4 border-red-500/50 bg-red-900/20 mb-6 py-6">
+    <h2 class="text-sm font-black text-red-400 uppercase tracking-widest mb-1">&#128663; Free Parking Pot</h2>
     <div id="freeParkingDisplay" class="text-5xl font-black text-white tracking-tighter">{{ free_parking_balance | currency }}</div>
 </div>
 {% endif %}
@@ -1334,7 +1396,7 @@ LEADERBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', ""
     const ctx = document.getElementById('wealthChart').getContext('2d');
     const rawLabels = {{ chart_labels | safe }};
     const rawData = {{ chart_data | safe }};
-    const bgColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6', '#f97316', '#84cc16'];
+    const rawColors = {{ chart_colors | safe }};
 
     const chart = new Chart(ctx, {
         type: 'pie',
@@ -1342,7 +1404,7 @@ LEADERBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', ""
             labels: rawLabels,
             datasets: [{
                 data: rawData,
-                backgroundColor: bgColors,
+                backgroundColor: rawColors,
                 borderWidth: 2, borderColor: '#2d3748'
             }]
         },
@@ -1361,6 +1423,7 @@ LEADERBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', ""
 
         let filteredLabels = [];
         let filteredData = [];
+        let filteredColors = [];
         let total = 0;
 
         rawLabels.forEach((label, i) => {
@@ -1369,11 +1432,13 @@ LEADERBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', ""
             
             filteredLabels.push(label);
             filteredData.push(rawData[i]);
+            filteredColors.push(rawColors[i]);
             total += rawData[i];
         });
 
         chart.data.labels = filteredLabels;
         chart.data.datasets[0].data = filteredData;
+        chart.data.datasets[0].backgroundColor = filteredColors;
         chart.update();
 
         document.getElementById('dynamicTotal').innerText = '$' + total.toLocaleString();
@@ -1488,7 +1553,7 @@ ADMIN_DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}'
                     <tr>
                         <th class="px-6 py-4">User</th>
                         <th class="px-6 py-4">Bank Access</th>
-                        <th class="px-6 py-4">Banker Role</th>
+                        <th class="px-6 py-4">Transfer founds of all users</th>
                         <th class="px-6 py-4">Manage Perms</th>
                         <th class="px-6 py-4">Cooldown</th>
                     </tr>
@@ -1753,16 +1818,26 @@ WELCOME_GUIDE_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', 
             <p class="text-gray-400 leading-relaxed">Buying property? Select <strong class="text-yellow-400">THE BANK</strong> as your recipient. Rent due? Just pick the player's name.</p>
         </div>
 
-        <div class="card border-l-4 border-purple-500 shadow-xl">
+        <div class="card border-l-4 border-red-500 shadow-xl">
             <h2 class="text-xl font-black text-white mb-3 uppercase flex items-center gap-2">
                 <span>&#128663;</span> 3. Free Parking
             </h2>
-            <p class="text-gray-400 leading-relaxed">Paying a fine? Send it to <strong class="text-purple-400">Free Parking</strong>. Landed on it? Use the <strong class="text-white">From Account</strong> dropdown to collect the pot!</p>
+            <p class="text-gray-400 leading-relaxed">Paying a fine? Send it to <strong class="text-red-400">Free Parking</strong>. Landed on it? Use the <strong class="text-white">From Account</strong> dropdown to collect the pot!</p>
         </div>
 
         <div class="card bg-green-900/10 border-4 border-green-500/20 text-center py-8">
             <h2 class="text-2xl font-black text-green-400 mb-2 italic">No more paper bills.</h2>
             <p class="text-gray-500 text-sm">Instant math. Real-time leaderboard. Total transparency. Welcome to the future of the game.</p>
+        </div>
+
+        <div class="card bg-gray-700/50 border-l-4 border-pink-500 shadow-xl mt-6">
+            <h2 class="text-xl font-black text-white mb-3 uppercase">Project Origins</h2>
+            <p class="text-gray-400 leading-relaxed mb-4 text-sm">
+                This app digitizes Monopoly banking for faster, cleaner play. It was <strong>vibe coded by Elric. To learn more or provide feedback, visit our website below.
+            </p>
+            <div class="text-center">
+                <a href="https://serpilas.com/" target="_blank" class="text-blue-400 underline font-bold text-lg hover:text-blue-300 transition">serpilas.com</a>
+            </div>
         </div>
     </div>
 </div>
@@ -1796,11 +1871,11 @@ def init_db():
             except: pass
             try: conn.execute(text("ALTER TABLE user ADD COLUMN created_at DATETIME"))
             except: pass
-            try: conn.execute(text("ALTER TABLE user ADD COLUMN color VARCHAR(20) DEFAULT '#3b82f6'"))
+            try: conn.execute(text("ALTER TABLE user ADD COLUMN color_hex VARCHAR(20) DEFAULT '#3b82f6'"))
             except: pass
 
         if not User.query.filter_by(username='Bank').first():
-            bank = User(username='Bank', balance=0, color='#1e3a8a', is_banker=True)
+            bank = User(username='Bank', balance=0, color_hex='#E2E8F0', is_banker=True)
             db.session.add(bank)
             db.session.commit()
             print("Bank user initialized.")

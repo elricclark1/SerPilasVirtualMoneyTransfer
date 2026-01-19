@@ -1,0 +1,76 @@
+name: Android Build
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: false # Keep default Android SDKs
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build with Buildozer
+        uses: ArtemSBulgakov/buildozer-action@v1
+        id: buildozer
+        with:
+          command: buildozer android debug
+          buildozer_version: master
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: serpilas-debug
+          path: bin/*.apk
+
+      - name: Release APK
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: bin/*.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate QR Code Summary
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          # Get the filename of the generated APK
+          APK_PATH=$(ls bin/*.apk | head -n 1)
+          APK_NAME=$(basename "$APK_PATH")
+          
+          # Construct Download URL
+          # Note: This assumes the repo is public or the user has access. 
+          # For private repos, the token in the URL is required or specific headers, 
+          # but standard releases are the target here.
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$APK_NAME"
+          
+          # Encode URL for QR Code (simple URL encoding)
+          ENCODED_URL=$(echo "$DOWNLOAD_URL" | sed 's/:/%3A/g; s/\//%2F/g')
+          QR_URL="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$DOWNLOAD_URL"
+          
+          echo "### 📱 Android Download (Pieron)" >> $GITHUB_STEP_SUMMARY
+          echo "Scan to install version **${{ github.ref_name }}**:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[![QR Code]($QR_URL)]($DOWNLOAD_URL)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Direct Link: [Download APK]($DOWNLOAD_URL)" >> $GITHUB_STEP_SUMMARY

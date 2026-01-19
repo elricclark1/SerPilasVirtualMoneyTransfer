@@ -1,14 +1,14 @@
 [app]
-title = HelloTest
-package.name = hellotest
+title = SerPilas
+package.name = serpilas
 package.domain = org.test
 source.dir = .
 source.include_exts = py
-version = 0.1
-requirements = python3,kivy==2.3.0,flask,flask-sqlalchemy,sqlalchemy,qrcode,pillow,greenlet,typing-extensions,jinja2,werkzeug,itsdangerous,click,markupsafe
+version = 1.0
+requirements = python3,kivy,flask,flask-sqlalchemy,sqlalchemy,qrcode,pillow,pyjnius,greenlet,typing-extensions,jinja2,werkzeug,itsdangerous,click,markupsafe,android
 orientation = portrait
 fullscreen = 0
-android.permissions = INTERNET
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE
 android.api = 33
 android.minapi = 21
 android.ndk = 25b
