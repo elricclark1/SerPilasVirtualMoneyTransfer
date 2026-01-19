@@ -12,31 +12,46 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Run the job inside the standard Kivy Buildozer container
+    container:
+      image: ghcr.io/kivy/buildozer:latest
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: false # Keep default Android SDKs
+      - name: Fix Permissions
+        # GitHub Actions runs as root in the container, but checkout might have different perms.
+        # We ensure the workspace is writable.
+        run: |
+          chown -R root:root $GITHUB_WORKSPACE
+          git config --global --add safe.directory $GITHUB_WORKSPACE
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Install Dependencies
+        # The container has most things, but sometimes we need specific libs for Python packages
+        run: |
+          apt-get update
+          apt-get install -y libffi-dev libssl-dev zip
 
       - name: Build with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          command: buildozer android debug
-          buildozer_version: master
+        run: |
+          # Ensure .buildozer directory exists
+          mkdir -p .buildozer
+          
+          # Force yes to accept license and install dependencies
+          yes | buildozer android debug
+        env:
+          # Fix for "dirty" git versioning if .git exists but permissions are weird
+          P4A_RELEASE_Keystore: ${{ secrets.P4A_RELEASE_KEYSTORE }} 
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.P4A_RELEASE_KEYSTORE_PASSWD }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.P4A_RELEASE_KEYALIAS_PASSWD }}
+          P4A_RELEASE_KEYALIAS: ${{ secrets.P4A_RELEASE_KEYALIAS }}
+          # Run as root inside the container
+          BUILDOZER_WARN_ON_ROOT: 0
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: serpilas-debug
           path: bin/*.apk
@@ -54,23 +69,19 @@ jobs:
       - name: Generate QR Code Summary
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          # Get the filename of the generated APK
-          APK_PATH=$(ls bin/*.apk | head -n 1)
-          APK_NAME=$(basename "$APK_PATH")
+          # Use Python to find the file because ls output can be tricky in scripts
+          apk_path=$(ls bin/*.apk | head -n 1)
+          apk_name=$(basename "$apk_path")
           
-          # Construct Download URL
-          # Note: This assumes the repo is public or the user has access. 
-          # For private repos, the token in the URL is required or specific headers, 
-          # but standard releases are the target here.
-          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$APK_NAME"
+          download_url="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$apk_name"
           
-          # Encode URL for QR Code (simple URL encoding)
-          ENCODED_URL=$(echo "$DOWNLOAD_URL" | sed 's/:/%3A/g; s/\//%2F/g')
-          QR_URL="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$DOWNLOAD_URL"
+          # Encode URL
+          encoded_url=$(echo "$download_url" | sed 's/:/%3A/g; s/\//%2F/g')
+          qr_url="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$download_url"
           
           echo "### 📱 Android Download (Pieron)" >> $GITHUB_STEP_SUMMARY
           echo "Scan to install version **${{ github.ref_name }}**:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "[![QR Code]($QR_URL)]($DOWNLOAD_URL)" >> $GITHUB_STEP_SUMMARY
+          echo "[![QR Code]($qr_url)]($download_url)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Direct Link: [Download APK]($DOWNLOAD_URL)" >> $GITHUB_STEP_SUMMARY
+          echo "Direct Link: [Download APK]($download_url)" >> $GITHUB_STEP_SUMMARY
