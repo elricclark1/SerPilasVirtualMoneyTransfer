@@ -337,11 +337,22 @@ except Exception:
     
     class CrashApp(App):
         def build(self):
-            layout = BoxLayout(orientation='vertical')
-            layout.add_widget(Label(text="CRASH DETECTED", font_size='20sp', color=(1,0,0,1), size_hint_y=None, height=50))
+            from kivy.core.window import Window
+            layout = BoxLayout(orientation='vertical', padding=10)
+            layout.add_widget(Label(text="CRASH DETECTED", font_size='24sp', bold=True, color=(1,0,0,1), size_hint_y=None, height=60))
             
-            scroll = ScrollView()
-            label = Label(text=error_msg, size_hint_y=None, color=(1,1,1,1))
+            scroll = ScrollView(do_scroll_x=False)
+            # Use text_size to enable wrapping and halign for left alignment
+            label = Label(
+                text=error_msg, 
+                size_hint_y=None, 
+                color=(1,1,1,1),
+                font_size='12sp',
+                font_name='Roboto',
+                halign='left',
+                valign='top',
+                text_size=(Window.width - 20, None)
+            )
             label.bind(texture_size=label.setter('size'))
             scroll.add_widget(label)
             
