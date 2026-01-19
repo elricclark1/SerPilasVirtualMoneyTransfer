@@ -5,7 +5,7 @@ package.domain = org.test
 source.dir = .
 source.include_exts = py
 version = 1.0
-requirements = python3,kivy,flask,flask-sqlalchemy,sqlalchemy,qrcode,pillow,pyjnius,greenlet,typing-extensions,jinja2,werkzeug,itsdangerous,click,markupsafe,android
+requirements = python3,kivy,flask,flask-sqlalchemy,sqlalchemy,qrcode,pillow,pyjnius,greenlet>=3.0.2,typing-extensions,jinja2,werkzeug,itsdangerous,click,markupsafe,android
 orientation = portrait
 fullscreen = 0
 android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE
