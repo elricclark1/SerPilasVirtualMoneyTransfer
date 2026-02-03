@@ -58,6 +58,30 @@ AVAILABLE_COLORS = [
     '#e11d48'  # Rose
 ]
 
+def get_next_available_color():
+    """Finds the first color in AVAILABLE_COLORS that isn't currently used by any user."""
+    try:
+        # Get all currently used colors
+        from sqlalchemy.sql import text
+        # We use a raw query or simple session query to avoid circular dependency issues if called early
+        # But here we are inside the app context usually
+        existing_users = User.query.all()
+        used_colors = {u.color_hex for u in existing_users}
+        
+        # Add system reserved colors just in case
+        used_colors.add('#EF4444') # Free Parking Red
+        used_colors.add('#E2E8F0') # Bank Grey
+
+        for color in AVAILABLE_COLORS:
+            if color not in used_colors:
+                return color
+        
+        # If all taken, return random or default
+        import random
+        return random.choice(AVAILABLE_COLORS)
+    except:
+        return AVAILABLE_COLORS[0]
+
 # --- Models ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -91,6 +115,15 @@ class User(db.Model):
         perms = self.get_permissions()
         perms[perm] = value
         self.permissions_json = json.dumps(perms)
+
+    def has_admin_access(self):
+        if self.is_root or self.is_admin: return True
+        # Permissions that require access to the Admin Dashboard
+        admin_perms = ['can_manage_permissions', 'can_delete_user', 'can_mint', 'can_burn', 'can_reset', 'can_toggle_monopoly']
+        for p in admin_perms:
+            if self.has_permission(p):
+                return True
+        return False
 
 class Transaction(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -268,7 +301,7 @@ def auto_login(username):
         # Create Host User (Root)
         start_balance = 1500 if get_setting('monopoly_mode') == '1' else 100
         # Root user gets all permissions implicitly via is_root=True
-        user = User(username=username, balance=start_balance, is_admin=True, is_banker=True, is_root=True)
+        user = User(username=username, balance=start_balance, is_admin=True, is_banker=True, is_root=True, color_hex=get_next_available_color())
         db.session.add(user)
         db.session.commit()
     else:
@@ -354,7 +387,7 @@ def index():
                                   initial_tx_id=last_tx_id,
                                   monopoly_mode=monopoly_mode,
                                   free_parking_balance=fp_balance,
-                                  is_admin=current_user.is_admin, # Keep legacy for main button
+                                  is_admin=current_user.has_admin_access(), # Dynamic check
                                   perms=perms)
 
 @app.route('/admin/export')
@@ -531,7 +564,7 @@ def admin_help():
         return redirect(url_for('index'))
     
     user = User.query.filter_by(username=session['user']).first()
-    if not user or not (user.is_admin or user.is_root):
+    if not user or not user.has_admin_access():
         flash("Access Denied.")
         return redirect(url_for('index'))
         
@@ -570,7 +603,7 @@ def login():
     user = User.query.filter_by(username=username).first()
     if not user:
         start_balance = 1500 if get_setting('monopoly_mode') == '1' else 100
-        user = User(username=username, balance=start_balance)
+        user = User(username=username, balance=start_balance, color_hex=get_next_available_color())
         db.session.add(user)
         db.session.commit()
     
@@ -753,16 +786,14 @@ def pass_go():
             flash(f"Pass Go locked! Wait {remaining}s")
             return redirect(url_for('index'))
 
-    bank = User.query.filter_by(username='Bank').first()
-    
-    if user and bank:
+    if user:
         amount = 200
-        bank.balance -= amount
+        # Money created from void (Inflation)
         user.balance += amount
         user.last_pass_go = datetime.datetime.utcnow()
-        db.session.add(Transaction(sender='Bank', receiver=user.username, amount=amount, note="Pass Go Reward"))
+        db.session.add(Transaction(sender='Pass Go', receiver=user.username, amount=amount, note="Pass Go Reward"))
         db.session.commit()
-        flash(f"Collected {amount} from Bank!")
+        flash(f"Collected {amount} from Pass Go!")
         
     return redirect(url_for('index'))
 
@@ -813,7 +844,7 @@ def admin():
         return redirect(url_for('index'))
     
     user = User.query.filter_by(username=session['user']).first()
-    if user and (user.is_admin or user.is_root):
+    if user and user.has_admin_access():
         return redirect(url_for('admin_dashboard'))
     
     flash("Access Denied: You do not have Administrative privileges.")
@@ -825,7 +856,7 @@ def admin_dashboard():
         return redirect(url_for('index'))
     
     current_user = User.query.filter_by(username=session['user']).first()
-    if not current_user or not (current_user.is_admin or current_user.is_root):
+    if not current_user or not current_user.has_admin_access():
         flash("Access Denied: Admin privileges required.")
         return redirect(url_for('index'))
 
@@ -1129,6 +1160,14 @@ DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
     <div id="balanceDisplay" class="text-8xl font-black text-white tracking-tighter leading-none drop-shadow-2xl" style="color: {{ user.color_hex }}">{{ user.balance | currency }}</div>
 </div>
 
+{% if monopoly_mode %}
+<form action="{{ url_for('pass_go') }}" method="POST" class="mb-8">
+    <button type="submit" id="passGoBtn" class="w-full py-5 rounded-2xl bg-green-600 hover:bg-green-500 text-white font-black text-2xl shadow-xl transition-all transform active:scale-95 border-b-4 border-green-800 active:border-b-0 flex items-center justify-center gap-2">
+        <span>🏁</span> <span id="passGoText">PASS GO (+$200)</span>
+    </button>
+</form>
+{% endif %}
+
 <div class="card relative shadow-2xl border border-gray-700/50">
     <h2 class="text-2xl font-black mb-4 text-gray-200">Transfer Funds</h2>
     <form action="{{ url_for('transfer') }}" method="POST" id="transferForm">
@@ -1139,11 +1178,9 @@ DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
                 <option value="me">My Account ({{ user.balance | currency }})</option>
                 <option value="bank" class="text-yellow-400">&#127974; THE BANK</option>
                 <option value="parking" class="text-red-400">&#128663; Free Parking</option>
-                <optgroup label="Players">
-                    {% for r in recents if r.username not in ['Bank', 'Free Parking'] %}
-                    <option value="{{ r.username }}">{{ r.username }}</option>
-                    {% endfor %}
-                </optgroup>
+                {% for r in recents if r.username not in ['Bank', 'Free Parking'] %}
+                <option value="{{ r.username }}">{{ r.username }}</option>
+                {% endfor %}
             </select>
         </div>
         {% elif perms.can_send_bank %}
@@ -1161,14 +1198,11 @@ DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
             <label class="text-sm font-bold text-gray-500 uppercase tracking-wide ml-1 mb-1 block">Recipient</label>
             <div class="flex gap-3 items-end">
                 <select name="recipient" id="recipientSelect" onchange="checkRecipient()" class="h-16 text-xl rounded-xl w-full bg-blue-900/30 border border-blue-500/50 text-white font-bold p-4">
-                    <option value="" disabled {{ 'selected' if not send_to else '' }}>Select Recipient</option>
                     <option value="bank" class="text-yellow-400" {{ 'selected' if send_to == 'Bank' else '' }}>&#127974; THE BANK</option>
                     <option value="parking" class="text-red-400" {{ 'selected' if send_to == 'Free Parking' else '' }}>&#128663; Free Parking</option>
-                    <optgroup label="Players">
-                        {% for r in recents if r.username not in ['Bank', 'Free Parking'] %}
-                        <option value="{{ r.username }}" {{ 'selected' if send_to == r.username else '' }}>{{ r.username }}</option>
-                        {% endfor %}
-                    </optgroup>
+                    {% for r in recents if r.username not in ['Bank', 'Free Parking'] %}
+                    <option value="{{ r.username }}" {{ 'selected' if send_to == r.username else '' }}>{{ r.username }}</option>
+                    {% endfor %}
                 </select>
                 
                 {% if not monopoly_mode %}
@@ -1555,6 +1589,7 @@ ADMIN_DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}'
                         <th class="px-6 py-4">Bank Access</th>
                         <th class="px-6 py-4">Transfer founds of all users</th>
                         <th class="px-6 py-4">Manage Perms</th>
+                        <th class="px-6 py-4">Delete Users</th>
                         <th class="px-6 py-4">Cooldown</th>
                     </tr>
                 </thead>
@@ -1566,7 +1601,7 @@ ADMIN_DASHBOARD_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}'
                             {% if stat.is_root %}<span class="text-xs text-red-400 ml-2 border border-red-400 px-2 rounded">ROOT</span>{% endif %}
                         </td>
                         <!-- Permissions Columns -->
-                        {% for perm in ['can_send_bank', 'can_act_as_banker', 'can_manage_permissions'] %}
+                        {% for perm in ['can_send_bank', 'can_act_as_banker', 'can_manage_permissions', 'can_delete_user'] %}
                         <td class="px-6 py-4">
                              {% if not stat.is_root and my_perms.can_manage_permissions %}
                              <form action="{{ url_for('admin_update_permission') }}" method="POST">
@@ -1699,6 +1734,12 @@ STATS_TEMPLATE = HTML_BASE.replace('{% block content %}{% endblock %}', """
             <p class="text-3xl font-black text-red-400 tracking-tighter">{{ inflation_pct }}%</p>
             <p class="text-[10px] text-gray-600 uppercase mt-1">Void Money / Total Supply</p>
         </div>
+    </div>
+    
+    <div class="mb-8 p-4 bg-gray-800 rounded-lg border border-gray-700 text-sm text-gray-400">
+        <p><strong class="text-white">How is Inflation Calculated?</strong></p>
+        <p>Inflation Rate = (Total Money Created from Void / Total Money in Circulation) * 100</p>
+        <p class="mt-1 text-xs italic">"Void Money" includes all cash generated via <strong>Pass Go</strong> and <strong>Admin Mints</strong> that didn't exist at the start.</p>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -1879,6 +1920,15 @@ def init_db():
             db.session.add(bank)
             db.session.commit()
             print("Bank user initialized.")
+
+        # Ensure Monopoly Mode default
+        if not SystemSetting.query.get('monopoly_mode'):
+            db.session.add(SystemSetting(key='monopoly_mode', value='1'))
+            # Ensure Free Parking exists if defaulting to Monopoly
+            if not User.query.filter_by(username='Free Parking').first():
+                 db.session.add(User(username='Free Parking', balance=0, color_hex='#EF4444'))
+            db.session.commit()
+            print("Monopoly Mode enabled by default.")
 
 if __name__ == '__main__':
     init_db()

@@ -12,9 +12,9 @@ try:
 
     # Set Window size for Desktop
     if platform not in ('android', 'ios'):
-        Config.set('graphics', 'width', '400')
-        Config.set('graphics', 'height', '700')
-        Config.set('graphics', 'resizable', False)
+        Config.set('graphics', 'width', '1000')
+        Config.set('graphics', 'height', '800')
+        Config.set('graphics', 'resizable', True)
 
     # Ensure the current directory is in python path
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -262,7 +262,7 @@ try:
                     
                     if is_monopoly == '1':
                         if not User.query.filter_by(username='Free Parking').first():
-                            fp = User(username='Free Parking', balance=0)
+                            fp = User(username='Free Parking', balance=0, color_hex='#EF4444')
                             db.session.add(fp)
                     
                     db.session.commit()
