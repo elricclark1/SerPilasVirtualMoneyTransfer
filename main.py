@@ -7,6 +7,14 @@ try:
     import threading
     import time
     import webbrowser
+    from kivy.config import Config
+    from kivy.utils import platform
+
+    # Set Window size for Desktop
+    if platform not in ('android', 'ios'):
+        Config.set('graphics', 'width', '400')
+        Config.set('graphics', 'height', '700')
+        Config.set('graphics', 'resizable', False)
 
     # Ensure the current directory is in python path
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -20,7 +28,6 @@ try:
     from kivy.clock import Clock
     from kivy.graphics.texture import Texture
     from kivy.core.window import Window
-    from kivy.utils import platform
     from kivy.graphics import Color, Rectangle, RoundedRectangle
     from kivy.uix.textinput import TextInput
     from kivy.uix.spinner import Spinner

@@ -1,37 +1,44 @@
-# Serpilas Virtual Money Transfer
+# SerPilas Virtual Money
 
-A local network virtual money transfer system built with Flask and Kivy.
-Designed to be a Monopoly banking assistant or a local economy simulator.
+A local network virtual money transfer system designed to digitize banking for games like Monopoly. This project allows one computer to act as the "Central Bank" while other players join using their own phones via a web browser.
 
-## Project Structure
+---
 
-- **main.py**: The entry point. Runs the Kivy GUI and starts the Flask server in a background thread.
-- **app.py**: The Flask application logic (routes, database models).
-- **buildozer.spec**: Configuration for building the Android APK using Buildozer.
+## 🚀 Desktop Hosting (Windows, Mac, Linux)
 
-## Local Development (PC/Linux)
+Running the server from your computer is the easiest way to play!
 
-1.  **Install Dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+### 1. Download & Prepare
+Download the repository and unzip it.
 
-2.  **Run the App:**
-    ```bash
-    python main.py
-    ```
-    This will open a window showing the QR code for the server.
-    Open the displayed URL (e.g., `http://192.168.1.X:8080`) on any device on the same Wi-Fi.
+### 2. Launch the Server
+*   **Windows:** Double-click `run_windows.bat`.
+*   **Linux/Mac:** Open a terminal in the folder and run `./run_unix.sh`.
 
-## Building for Android
+*The script will automatically set up a virtual environment, install requirements, and start the app.*
 
-Ensure you have `buildozer` installed (`pip install buildozer`).
+### 3. Connect Players
+1.  A window will appear on your desktop showing a **QR Code** and an **IP Address**.
+2.  All players must be on the **same Wi-Fi** network.
+3.  Players scan the QR code with their phones to open the game dashboard.
+4.  The Host (you) will automatically have a browser tab open to the Admin Dashboard.
 
-```bash
-buildozer android debug
-```
+---
 
-## Admin Access
+## 🛠️ Tech Stack
 
-- **Login URL:** `/admin`
-- **Default Password:** `ADMIN123`
+- **Backend:** Flask (Python)
+- **Database:** SQLite (SQLAlchemy)
+- **Host UI:** Kivy
+- **Frontend:** HTML5 / Tailwind CSS (Serve via Flask)
+
+## 👤 Admin Features
+
+The host has special "Root" privileges:
+- **Mint/Burn:** Create money out of thin air or destroy it.
+- **Banker Mode:** Move money between any two players.
+- **Permissions:** Grant other players "Banker" status.
+- **Export/Import:** Save your game state to a JSON file and resume later.
+
+---
+*Vibe coded by Elric. Visit [serpilas.com](https://serpilas.com/) for more.*

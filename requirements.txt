@@ -1,5 +1,3 @@
-# Desktop deps for: python main.py
-# APK build: buildozer android debug (buildozer.spec has android, pyjnius, etc.)
 Flask
 Flask-SQLAlchemy
 sqlalchemy
